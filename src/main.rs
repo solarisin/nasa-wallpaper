@@ -26,10 +26,11 @@ extern crate wallpaper;
 #[macro_use]
 extern crate serde_derive;
 
+use core::option::Option;
 use chrono::prelude::*;
 use chrono_tz::Tz;
 use chrono_tz::US::Eastern;
-use clap::{Arg, Command};
+use clap::{builder::PossibleValue, Arg, Command, ValueEnum};
 use colored::*;
 use rand::Rng;
 use std::error::Error;
@@ -58,6 +59,77 @@ const MSG_CHANGING: &str = "Changing wallpaper...";
 const URL_UNSPLASH: &str = "https://source.unsplash.com/user/nasa";
 
 type WallpaperResult<T> = Result<T, Box<dyn Error>>;
+
+#[derive(Clone, Debug)]
+pub enum Mode {
+    Center,
+    Crop,
+    Fit,
+    Span,
+    Stretch,
+    Tile,
+}
+
+impl Mode {
+    pub fn possible_values() -> impl Iterator<Item = PossibleValue> {
+        Self::value_variants()
+            .iter()
+            .filter_map(ValueEnum::to_possible_value)
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.to_possible_value()
+            .expect("no values are skipped")
+            .get_name()
+            .fmt(f)
+    }
+}
+
+impl std::str::FromStr for Mode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        for variant in Self::value_variants() {
+            if variant.to_possible_value().unwrap().matches(s, false) {
+                return Ok(variant.clone());
+            }
+        }
+        Err(format!("invalid variant: {s}"))
+    }
+}
+
+impl ValueEnum for Mode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Center,
+            Self::Crop,
+            Self::Fit,
+            Self::Span,
+            Self::Stretch,
+            Self::Tile,]
+    }
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Center => PossibleValue::new("center").alias("Center"),
+            Self::Crop => PossibleValue::new("crop").alias("Crop"),
+            Self::Fit => PossibleValue::new("fit").alias("Fit"),
+            Self::Span => PossibleValue::new("span").alias("Span"),
+            Self::Stretch => PossibleValue::new("stretch").alias("Stretch"),
+            Self::Tile => PossibleValue::new("tile").alias("Tile"),
+        })
+    }
+}
+
+fn conv_mode(mode: &Mode) -> wallpaper::Mode {
+    match mode {
+        Mode::Center => {wallpaper::Mode::Center},
+        Mode::Crop => {wallpaper::Mode::Crop},
+        Mode::Fit => {wallpaper::Mode::Fit},
+        Mode::Span => {wallpaper::Mode::Span},
+        Mode::Stretch => {wallpaper::Mode::Stretch},
+        Mode::Tile => {wallpaper::Mode::Tile},        
+    }
+}
 
 #[derive(Deserialize)]
 struct Apod {
@@ -253,6 +325,7 @@ fn get_nasa_image(
 /// # Arguments
 /// - `apod`: APOD metadata previously fetched from the API.
 /// - `hd`: When `true`, use `apod.hdurl`; otherwise use `apod.url`.
+/// - `mode`: Wallpaper display mode to apply after setting the image.
 ///
 /// # Errors
 /// Returns an error if the underlying wallpaper backend fails to download or
@@ -260,12 +333,13 @@ fn get_nasa_image(
 ///
 /// # Notes
 /// If `apod.hdurl` is empty for a given day, using `hd = true` may fail.
-fn set_wallpaper(apod: &Apod, hd: bool) -> WallpaperResult<()> {
+fn set_wallpaper(apod: &Apod, hd: bool, mode: &Mode) -> WallpaperResult<()> {
     if hd {
         wallpaper::set_from_url(&apod.hdurl)?;
     } else {
         wallpaper::set_from_url(&apod.url)?;
     }
+    wallpaper::set_mode(conv_mode(mode))?;
     Ok(())
 }
 
@@ -372,6 +446,13 @@ fn cli() -> Command {
             "Get a random image from the NASA's account in Unsplash (https://unsplash.com/@nasa)",
         ))
         .subcommand(Command::new("license").about("Print the license of this program"))
+        .arg(
+            Arg::new("mode")
+                .short('m')
+                .long("mode")
+                .value_parser(clap::builder::EnumValueParser::<Mode>::new())
+                .help("Sets the wallpaper display mode."),
+        )
 }
 
 /// Normalizes arguments for backwards-compatible shorthand flags.
@@ -398,6 +479,7 @@ fn normalize_args(mut args: Vec<OsString>) -> Vec<OsString> {
 fn main() {
     let args = normalize_args(std::env::args_os().collect());
     let matches = cli().get_matches_from(args);
+    let mode = matches.get_one::<Mode>("mode").unwrap_or(&Mode::Crop);
 
     match matches.subcommand() {
         Some(("apod", sub_matches)) => {
@@ -420,7 +502,7 @@ fn main() {
                     return;
                 }
                 println!("{}", MSG_CHANGING.yellow());
-                if let Err(err) = set_wallpaper(&apod, hd) {
+                if let Err(err) = set_wallpaper(&apod, hd, mode) {
                     println!("{}", format!("Error: {}", err).red());
                 } else {
                     println!("{}", MSG_DONE.green());
@@ -430,6 +512,7 @@ fn main() {
         Some(("unsplash", _)) => {
             println!("{}", MSG_CHANGING.yellow());
             wallpaper::set_from_url(URL_UNSPLASH).unwrap();
+            wallpaper::set_mode(conv_mode(mode)).unwrap();
             println!("{}", MSG_DONE.green());
         }
         Some(("nasa_image", sub_matches)) => {
@@ -481,11 +564,12 @@ fn main() {
             println!("{}", nasa_image);
             println!("{}", MSG_CHANGING.yellow());
             wallpaper::set_from_url(&nasa_image.url).unwrap();
+            wallpaper::set_mode(conv_mode(mode)).unwrap();
             println!("{}", MSG_DONE.green());
         }
         Some(("license", _)) => {
             print_license();
         }
         _ => {}
-    }
+    }    
 }
