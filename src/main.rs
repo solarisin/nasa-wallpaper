@@ -374,6 +374,13 @@ fn cli() -> Command {
                         .short('l')
                         .long("low")
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("info")
+                        .short('i')
+                        .long("info")
+                        .help("Show the APOD information in terminal instead of setting it as wallpaper")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -494,13 +501,18 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or(API_KEY);
             let hd = sub_matches.get_flag("low");
+            let info = sub_matches.get_flag("info");
 
             if let Ok(apod) = get_apod(date, api_key) {
                 println!("{}", apod);
+                if info {
+                    return;
+                }
                 if apod.media_type != "image" {
                     print!("{}, {}", "The date you have chosen for the APOD has no image. See the original content in: {}".yellow(), apod.url.yellow());
                     return;
                 }
+
                 println!("{}", MSG_CHANGING.yellow());
                 if let Err(err) = set_wallpaper(&apod, hd, mode) {
                     println!("{}", format!("Error: {}", err).red());
@@ -571,5 +583,5 @@ fn main() {
             print_license();
         }
         _ => {}
-    }    
+    }
 }

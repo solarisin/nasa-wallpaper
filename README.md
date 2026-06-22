@@ -61,6 +61,21 @@ The compiled binary will be available under `target/release/`.
   nasa-wallpaper apod -d 1999-03-27
   ```
 
+* Show APOD information without changing the wallpaper:
+
+  ```bash
+  nasa-wallpaper apod --info
+  ```
+
+* Choose a wallpaper display mode (place `--mode` before the subcommand):
+
+  ```bash
+  nasa-wallpaper --mode fit apod
+  ```
+
+  Modes: `center`, `crop` (default), `fit`, `span`, `stretch`, and `tile`.
+  The mode also applies to `nasa_image` and `unsplash`.
+
 * Set a random image from the NASA Image Library:
 
   ```bash
