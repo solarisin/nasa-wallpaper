@@ -8,9 +8,8 @@
 A lightweight tool to automatically set your desktop wallpaper with stunning NASA images.
 You can choose images from:
 
-* [APOD (Astronomical Picture of the Day)](https://apod.nasa.gov/apod/)
+* [APOD (Astronomical Picture of the Day)](https://science.nasa.gov/apod/)
 * [NASA Image Library](https://images.nasa.gov/)
-* [NASA on Unsplash](https://unsplash.com/@nasa)
 
 ![Example](https://images-assets.nasa.gov/image/iss040e008244/iss040e008244~small.jpg)
 
@@ -67,6 +66,12 @@ The compiled binary will be available under `target/release/`.
   nasa-wallpaper apod --info
   ```
 
+* Download a lower-resolution version of the APOD (max 1280 px):
+
+  ```bash
+  nasa-wallpaper apod --low --date 2014-09-18
+  ```
+
 * Choose a wallpaper display mode (place `--mode` before the subcommand):
 
   ```bash
@@ -74,7 +79,7 @@ The compiled binary will be available under `target/release/`.
   ```
 
   Modes: `center`, `crop` (default), `fit`, `span`, `stretch`, and `tile`.
-  The mode also applies to `nasa_image` and `unsplash`.
+  The mode also applies to `nasa_image`.
 
 * Set a random image from the NASA Image Library:
 
@@ -88,11 +93,27 @@ The compiled binary will be available under `target/release/`.
   nasa-wallpaper nasa_image -q earth
   ```
 
+* Use the `-a` and `-n` shortcuts from earlier versions in place of `apod` and `nasa_image`:
+
+  ```bash
+  nasa-wallpaper -a -d 1999-03-27
+  nasa-wallpaper -n -q earth
+  ```
+
 * Show help:
 
   ```bash
   nasa-wallpaper help
   ```
+
+### ℹ️ APOD notes
+
+On **September 29, 2026**, NASA moved APOD from `apod.nasa.gov` to [science.nasa.gov/apod](https://science.nasa.gov/apod/) and the old `api.nasa.gov` APOD API stopped working. nasa-wallpaper now uses NASA Science's [APOD API](https://science.nasa.gov/wp-json/wp/v2/apod-basic/140918), which brings a few changes:
+
+* **No API key needed.** The `--key` / `-k` option has been removed, so drop it from any existing commands or scripts.
+* **Today's APOD** is based on the current date in US Eastern time. If today's picture hasn't been published yet, a warning is shown and the wallpaper is left unchanged.
+* **Videos** are not set as wallpaper; their information and a link to the APOD page are shown instead.
+* **`--low`** only works for images hosted on `assets.science.nasa.gov`. For other images it shows a warning rather than downloading the full-size version.
 
 📖 **Full documentation:** [Wiki – Command Line Help](https://github.com/davidpob99/nasa-wallpaper/wiki/Command%E2%80%90Line-Help)
 

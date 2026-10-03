@@ -2,7 +2,7 @@
 pkgname=nasa-wallpaper
 pkgver=2.1
 pkgrel=1
-pkgdesc="Change your desktop background with a NASA image. You can set an image from the APOD (Astronomical Picture of the Day), the NASA Image Library or the NASA's account in Unsplash"
+pkgdesc="Change your desktop background with a NASA image. You can set an image from the APOD (Astronomical Picture of the Day) or the NASA Image Library"
 arch=("i686" "x86_64" "aarch64" "arm")
 url="https://github.com/davidpob99/nasa-wallpaper"
 license=("Apache")
