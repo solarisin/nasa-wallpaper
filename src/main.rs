@@ -535,7 +535,8 @@ fn cli() -> Command {
                 .arg(
                     Arg::new("photographer")
                         .short('p')
-                        .long("phtographer")
+                        .long("photographer")
+                        .alias("phtographer")
                         .value_name("PHOTOGRAPHER")
                         .action(clap::ArgAction::Set)
                         .help("The primary photographer’s name"),
