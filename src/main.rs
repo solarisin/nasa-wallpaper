@@ -33,6 +33,7 @@ use chrono_tz::US::Eastern;
 use clap::{builder::PossibleValue, Arg, Command, ValueEnum};
 use colored::*;
 use rand::Rng;
+use std::borrow::Cow;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -52,7 +53,6 @@ const LICENSE_TEXT: &str = r#"
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 "#;
 
-const API_KEY: &str = "DEMO_KEY";
 const VERSION: &str = "2.1.1";
 const MSG_DONE: &str = "Done";
 const MSG_CHANGING: &str = "Changing wallpaper...";
@@ -134,14 +134,17 @@ fn conv_mode(mode: &Mode) -> wallpaper::Mode {
 #[derive(Deserialize)]
 struct Apod {
     #[serde(default)]
-    copyright: String,
+    copyright: Option<String>,
+    #[serde(default)]
+    credit: Option<String>,
     date: String,
     explanation: String,
-    #[serde(default)]
-    hdurl: String,
+    #[serde(default, rename = "hdurl")]
+    image_url: Option<String>,
     media_type: String,
     title: String,
-    url: String,
+    #[serde(rename = "url")]
+    page_url: String,
 }
 
 impl fmt::Display for Apod {
@@ -155,7 +158,7 @@ impl fmt::Display for Apod {
             self.title.bold().italic(),
             self.date.italic(),
             self.explanation,
-            self.copyright
+            self.copyright.as_deref().unwrap_or("")
         )
     }
 }
@@ -187,27 +190,136 @@ impl fmt::Display for NasaImage {
     }
 }
 
-/// Fetches NASA's Astronomy Picture of the Day (APOD) metadata.
-///
-/// # Arguments
-/// - `date`: Date string in `YYYY-MM-DD` format.
-/// - `api_key`: NASA API key (e.g. `DEMO_KEY`).
-///
-/// # Returns
-/// An [`Apod`] struct populated from the API response.
-///
-/// # Errors
-/// Returns a [`reqwest::Error`] if the request fails or the response body
-/// cannot be deserialized.
-fn get_apod(date: &str, api_key: &str) -> Result<Apod, reqwest::Error> {
-    let request_url = format!(
-        "https://api.nasa.gov/planetary/apod?api_key={api_key}&date={date}",
-        api_key = api_key,
-        date = date
-    );
+/// Fetches a single APOD Basic entry for a validated calendar date.
+fn get_apod(date: &str) -> WallpaperResult<Apod> {
+    get_apod_from(date, "https://science.nasa.gov/wp-json/wp/v2/apod-basic")
+}
 
-    let response = reqwest::blocking::get(&request_url)?.json::<Apod>()?;
-    Ok(response)
+fn parse_apod_date(date: &str) -> WallpaperResult<NaiveDate> {
+    if date.len() != 10 || !date.bytes().enumerate().all(|(index, byte)| {
+        if index == 4 || index == 7 { byte == b'-' } else { byte.is_ascii_digit() }
+    }) {
+        return Err(format!("Invalid APOD date '{date}': expected YYYY-MM-DD").into());
+    }
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| format!("Invalid APOD date '{date}': expected a calendar date YYYY-MM-DD").into())
+}
+
+/// The private request boundary also allows deterministic local HTTP tests.
+fn get_apod_from(date: &str, base_url: &str) -> WallpaperResult<Apod> {
+    let requested = parse_apod_date(date)?;
+    let request_url = format!("{}/{}", base_url.trim_end_matches('/'), requested.format("%y%m%d"));
+    let response = reqwest::blocking::get(&request_url)
+        .map_err(|err| format!("APOD request failed: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text()
+            .map_err(|err| format!("APOD HTTP {status}: could not read response: {err}"))?;
+        let detail = match json::parse(&body) {
+            Ok(error) if error["message"].as_str().is_some() => {
+                let message = render_apod_text(error["message"].as_str().unwrap())?;
+                match error["code"].as_str() {
+                    Some(code) => format!("{code}: {message}"),
+                    None => message,
+                }
+            }
+            _ => body.trim().to_owned(),
+        };
+        return Err(format!("APOD HTTP {status} for {date}: {detail}").into());
+    }
+    let mut apod = response.json::<Apod>()
+        .map_err(|err| format!("Invalid APOD response for {date}: {err}"))?;
+    if apod.date != date {
+        return Err(format!("APOD date mismatch: requested {date}, returned {}", apod.date).into());
+    }
+    apod.title = render_apod_text(&apod.title)?;
+    apod.explanation = remove_metadata_label(render_apod_text(&apod.explanation)?, &["Explanation:"]);
+    let copyright = remove_metadata_label(
+        render_apod_text(apod.copyright.as_deref().unwrap_or(""))?,
+        &["Image Credit & Copyright:", "Image Credit:", "Credit:", "Copyright:"],
+    );
+    let attribution = if copyright.is_empty() {
+        render_apod_text(apod.credit.as_deref().unwrap_or(""))?
+    } else {
+        copyright
+    };
+    apod.copyright = Some(remove_metadata_label(attribution, &["Image Credit & Copyright:", "Image Credit:", "Credit:", "Copyright:"]));
+    Ok(apod)
+}
+
+fn render_apod_text(html: &str) -> WallpaperResult<String> {
+    html2text::config::with_decorator(html2text::render::TrivialDecorator::new())
+        .string_from_read(html.as_bytes(), 100)
+        .map(|mut text| {
+            text.truncate(text.trim_end().len());
+            let leading = text.len() - text.trim_start().len();
+            text.drain(..leading);
+            text
+        })
+        .map_err(|err| format!("Could not render APOD metadata: {err}").into())
+}
+
+fn remove_metadata_label(mut text: String, labels: &[&str]) -> String {
+    for label in labels {
+        if let Some(rest) = text.strip_prefix(label) {
+            let leading = text.len() - rest.trim_start().len();
+            text.drain(..leading);
+            return text;
+        }
+    }
+    text
+}
+
+/// Selects only eligible images; default downloads borrow the exact API URL.
+fn apod_image_url(apod: &Apod, low: bool) -> WallpaperResult<Option<Cow<'_, str>>> {
+    if apod.media_type != "image" {
+        return Ok(None);
+    }
+    let image_url = apod.image_url.as_deref().filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| format!("APOD image unavailable for {}. Article: {}", apod.date, apod.page_url))?;
+    if !low {
+        return Ok(Some(Cow::Borrowed(image_url)));
+    }
+    let unavailable = || format!("Low-resolution rendition unavailable for {}. Article: {}", apod.date, apod.page_url);
+    let mut url = reqwest::Url::parse(image_url).map_err(|_| unavailable())?;
+    if url.scheme() != "https" || url.host_str() != Some("assets.science.nasa.gov")
+        || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+    {
+        return Err(unavailable().into());
+    }
+    let path = url.path();
+    if let Some(asset) = path.strip_prefix("/content/dam/").filter(|asset| !asset.is_empty()) {
+        let path = format!("/dynamicimage/assets/{asset}");
+        url.set_path(&path);
+    } else if !path.strip_prefix("/dynamicimage/assets/").is_some_and(|asset| !asset.is_empty()) {
+        return Err(unavailable().into());
+    }
+    let mut width = false;
+    let mut height = false;
+    let mut pairs = Vec::new();
+    for (name, value) in url.query_pairs() {
+        let value = match name.as_ref() {
+            "w" | "h" => {
+                let dimension = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    value.parse::<u32>().ok().filter(|dimension| *dimension > 0)
+                } else {
+                    None
+                }.ok_or_else(unavailable)?;
+                let seen = if name == "w" { &mut width } else { &mut height };
+                if *seen { return Err(unavailable().into()); }
+                *seen = true;
+                dimension.min(1280).to_string()
+            }
+            "fit" => continue,
+            _ => value.into_owned(),
+        };
+        pairs.push((name.into_owned(), value));
+    }
+    if !width || !height {
+        return Err(unavailable().into());
+    }
+    url.query_pairs_mut().clear().extend_pairs(pairs).append_pair("fit", "clip");
+    Ok(Some(Cow::Owned(url.into())))
 }
 
 /// Fetches a random image from the NASA Image and Video Library.
@@ -320,26 +432,26 @@ fn get_nasa_image(
     }
 }
 
-/// Sets the system wallpaper to the APOD image.
-///
-/// # Arguments
-/// - `apod`: APOD metadata previously fetched from the API.
-/// - `hd`: When `true`, use `apod.hdurl`; otherwise use `apod.url`.
-/// - `mode`: Wallpaper display mode to apply after setting the image.
-///
-/// # Errors
-/// Returns an error if the underlying wallpaper backend fails to download or
-/// set the image.
-///
-/// # Notes
-/// If `apod.hdurl` is empty for a given day, using `hd = true` may fail.
-fn set_wallpaper(apod: &Apod, hd: bool, mode: &Mode) -> WallpaperResult<()> {
-    if hd {
-        wallpaper::set_from_url(&apod.hdurl)?;
-    } else {
-        wallpaper::set_from_url(&apod.url)?;
-    }
+/// Downloads the selected image and applies the existing wallpaper mode.
+fn set_wallpaper(image_url: &str, mode: &Mode) -> WallpaperResult<()> {
+    wallpaper::set_from_url(image_url)?;
     wallpaper::set_mode(conv_mode(mode))?;
+    Ok(())
+}
+
+fn show_apod(apod: &Apod, info: bool, low: bool, mode: &Mode) -> WallpaperResult<()> {
+    println!("{apod}");
+    if apod.media_type != "image" {
+        println!("This APOD is not an image. Article: {}", apod.page_url);
+        return Ok(());
+    }
+    if info {
+        return Ok(());
+    }
+    let image_url = apod_image_url(apod, low)?.expect("image media was checked");
+    println!("{}", MSG_CHANGING.yellow());
+    set_wallpaper(&image_url, mode)?;
+    println!("{}", MSG_DONE.green());
     Ok(())
 }
 
@@ -368,11 +480,11 @@ fn cli() -> Command {
             Command::new("apod")
                 .about("Get the APOD (Astronomical Picture of the Day)")
                 .arg(Arg::new("date").short('d').long("date").value_name("DATE"))
-                .arg(Arg::new("key").short('k').long("key").value_name("API_KEY"))
                 .arg(
                     Arg::new("low")
                         .short('l')
                         .long("low")
+                        .help("Use a supported NASA remote rendition bounded at 1280 pixels; unavailable sources fail")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
@@ -491,34 +603,19 @@ fn main() {
     match matches.subcommand() {
         Some(("apod", sub_matches)) => {
             let (year, month, day) = get_today_est();
-            let today = format!("{}-{}-{}", year, month, day);
+            let today = format!("{year:04}-{month:02}-{day:02}");
             let date = sub_matches
                 .get_one::<String>("date")
                 .map(|s| s.as_str())
                 .unwrap_or(&today);
-            let api_key = sub_matches
-                .get_one::<String>("key")
-                .map(|s| s.as_str())
-                .unwrap_or(API_KEY);
-            let hd = sub_matches.get_flag("low");
+            let low = sub_matches.get_flag("low");
             let info = sub_matches.get_flag("info");
 
-            if let Ok(apod) = get_apod(date, api_key) {
-                println!("{}", apod);
-                if info {
-                    return;
-                }
-                if apod.media_type != "image" {
-                    print!("{}, {}", "The date you have chosen for the APOD has no image. See the original content in: {}".yellow(), apod.url.yellow());
-                    return;
-                }
-
-                println!("{}", MSG_CHANGING.yellow());
-                if let Err(err) = set_wallpaper(&apod, hd, mode) {
-                    println!("{}", format!("Error: {}", err).red());
-                } else {
-                    println!("{}", MSG_DONE.green());
-                }
+            let result = get_apod(date)
+                .and_then(|apod| show_apod(&apod, info, low, mode));
+            if let Err(err) = result {
+                eprintln!("APOD error: {err}");
+                process::exit(1);
             }
         }
         Some(("unsplash", _)) => {
@@ -583,5 +680,235 @@ fn main() {
             print_license();
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    const ASSET: &str = "https://assets.science.nasa.gov/dynamicimage/assets/science/Moon%20Trail.jpg?w=1824&h=1037&fit=crop&crop=faces%2Cfocalpoint";
+    const ARTICLE: &str = "https://science.nasa.gov/apod/example/";
+
+    fn payload(date: &str, media: &str, image: Option<&str>) -> String {
+        let mut value = json::object! {
+            date: date,
+            media_type: media,
+            title: "Moon &amp; <em>Stars</em>",
+            explanation: "<p><strong>Explanation:</strong> First &amp; &#9733;.</p><p>Second<br>Third <a href=\"https://example.com/\">link</a>.</p>",
+            copyright: null,
+            credit: "<p>Credit: A &amp; B</p>",
+            url: ARTICLE,
+        };
+        if let Some(image) = image {
+            value["hdurl"] = image.into();
+        }
+        value.dump()
+    }
+
+    fn serve(status: &str, body: String) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/apod", listener.local_addr().unwrap());
+        let status = status.to_owned();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            String::from_utf8(request).unwrap().lines().next().unwrap().to_owned()
+        });
+        (base, handle)
+    }
+
+    fn fetch(body: String) -> Apod {
+        let (base, request) = serve("200 OK", body);
+        let apod = get_apod_from("1999-03-27", &base).unwrap();
+        assert_eq!(request.join().unwrap(), "GET /apod/990327 HTTP/1.1");
+        apod
+    }
+
+    #[test]
+    fn calendar_dates_reach_the_expected_single_date_routes() {
+        for (date, route) in [
+            ("1999-12-31", "991231"),
+            ("2000-01-01", "000101"),
+            ("2000-02-29", "000229"),
+            ("2024-02-29", "240229"),
+            ("1900-03-01", "000301"),
+        ] {
+            let (base, request) = serve("200 OK", payload(date, "image", Some(ASSET)));
+            get_apod_from(date, &base).unwrap();
+            assert_eq!(request.join().unwrap(), format!("GET /apod/{route} HTTP/1.1"));
+        }
+    }
+
+    #[test]
+    fn invalid_calendar_dates_fail_without_any_http_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        for date in ["1999-02-30", "1900-02-29", "2023-02-29", "2024-13-01", "2024-00-01", "2024-01-00", "2024-1-01", "24-01-01", "2024-01-01extra"] {
+            assert!(get_apod_from(date, &base).is_err(), "{date}");
+        }
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn full_date_identity_rejects_wrong_day_and_century() {
+        for returned in ["1999-03-28", "2099-03-27"] {
+            let (base, request) = serve("200 OK", payload(returned, "image", Some(ASSET)));
+            let error = get_apod_from("1999-03-27", &base).err().unwrap().to_string();
+            assert!(error.contains("1999-03-27") && error.contains(returned));
+            request.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn http_failures_keep_status_and_original_response_details() {
+        for (status, body, detail) in [
+            ("404 Not Found", r#"{"code":"apod_basic_not_found","message":"APOD not found."}"#, "apod_basic_not_found"),
+            ("503 Service Unavailable", "Upstream temporarily unavailable", "Upstream temporarily unavailable"),
+        ] {
+            let (base, request) = serve(status, body.to_owned());
+            let error = get_apod_from("1999-03-27", &base).err().unwrap().to_string();
+            assert!(error.contains(status) && error.contains(detail), "{error}");
+            request.join().unwrap();
+        }
+        let (base, request) = serve("200 OK", "not valid JSON".to_owned());
+        assert!(get_apod_from("1999-03-27", &base).is_err());
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn default_selection_uses_exact_asset_not_article() {
+        let apod = fetch(payload("1999-03-27", "image", Some(ASSET)));
+        assert_eq!(apod_image_url(&apod, false).unwrap().as_deref(), Some(ASSET));
+    }
+
+    #[test]
+    fn nonimage_entries_never_install_featured_stills() {
+        for media in ["video", "iframe"] {
+            for image in [None, Some(ASSET)] {
+                let apod = fetch(payload("1999-03-27", media, image));
+                assert!(apod_image_url(&apod, true).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn missing_null_and_empty_image_assets_fail_with_article_context() {
+        let absent = payload("1999-03-27", "image", None);
+        let mut null = json::parse(&absent).unwrap();
+        null["hdurl"] = json::Null;
+        for body in [absent, null.dump(), payload("1999-03-27", "image", Some("")), payload("1999-03-27", "image", Some("  "))] {
+            let apod = fetch(body);
+            let error = apod_image_url(&apod, false).unwrap_err().to_string();
+            assert!(error.contains(ARTICLE));
+        }
+    }
+
+    #[test]
+    fn low_renditions_cap_both_families_preserving_encoded_paths_and_parameters() {
+        for prefix in ["dynamicimage/assets", "content/dam"] {
+            let image = format!("https://assets.science.nasa.gov/{prefix}/science/Moon%20Trail%2BStars.jpg?w=1824&h=1037&fit=crop&crop=faces%2Cfocalpoint&token=a%2Bb");
+            let apod = fetch(payload("1999-03-27", "image", Some(&image)));
+            let selected = apod_image_url(&apod, true).unwrap().unwrap();
+            let url = reqwest::Url::parse(&selected).unwrap();
+            assert_eq!(url.path(), "/dynamicimage/assets/science/Moon%20Trail%2BStars.jpg");
+            let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
+            assert_eq!(pairs.get("w").unwrap(), "1280");
+            assert_eq!(pairs.get("h").unwrap(), "1037");
+            assert_eq!(pairs.get("fit").unwrap(), "clip");
+            assert_eq!(pairs.get("crop").unwrap(), "faces,focalpoint");
+            assert_eq!(pairs.get("token").unwrap(), "a+b");
+            assert_eq!(apod_image_url(&apod, false).unwrap().unwrap(), image);
+        }
+        for (image, width, height) in [
+            ("https://assets.science.nasa.gov/dynamicimage/assets/small.png?w=594&h=516&fit=clip", "594", "516"),
+            ("https://assets.science.nasa.gov/content/dam/tall.jpg?w=900&h=3000", "900", "1280"),
+        ] {
+            let apod = fetch(payload("1999-03-27", "image", Some(image)));
+            let selected = apod_image_url(&apod, true).unwrap().unwrap();
+            let url = reqwest::Url::parse(&selected).unwrap();
+            let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
+            assert_eq!(pairs.get("w").unwrap(), width);
+            assert_eq!(pairs.get("h").unwrap(), height);
+        }
+    }
+
+    #[test]
+    fn unsupported_low_renditions_fail_instead_of_installing_full_size() {
+        for image in [
+            "https://example.com/image.jpg?w=2000&h=2000",
+            "http://assets.science.nasa.gov/content/dam/image.jpg?w=2000&h=2000",
+            "https://assets.science.nasa.gov/other/image.jpg?w=2000&h=2000",
+            "https://assets.science.nasa.gov/content/dam/",
+            "https://assets.science.nasa.gov/content/dam/image.jpg",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=0&h=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=-1&h=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=1.5&h=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=abc&h=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=2000&h=",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=4294967296&h=2000",
+            "https://assets.science.nasa.gov/content/dam/image.jpg?w=2000&w=900&h=2000",
+        ] {
+            let apod = fetch(payload("1999-03-27", "image", Some(image)));
+            assert!(apod_image_url(&apod, true).is_err(), "{image}");
+            assert_eq!(apod_image_url(&apod, false).unwrap().unwrap(), image);
+        }
+    }
+
+    #[test]
+    fn metadata_is_readable_with_entities_paragraphs_and_attribution_fallback() {
+        let apod = fetch(payload("1999-03-27", "image", Some(ASSET)));
+        assert_eq!(apod.title, "Moon & Stars");
+        assert!(apod.explanation.contains("First & ★."));
+        assert!(!apod.explanation.contains('<') && !apod.explanation.contains('[') && !apod.explanation.contains("https://example.com"));
+        assert!(apod.explanation.contains("Third link."));
+        assert!(!apod.explanation.starts_with("Explanation:"));
+        assert_eq!(apod.copyright.as_deref(), Some("A & B"));
+        for copyright in ["", "<p> </p>", "<p>Copyright:</p>", "<p><b>Copyright:</b> C &#169; D</p>"] {
+            let mut body = json::parse(&payload("1999-03-27", "image", Some(ASSET))).unwrap();
+            body["copyright"] = copyright.into();
+            let apod = fetch(body.dump());
+            assert_eq!(apod.copyright.as_deref(), Some(if copyright.contains("&#169;") { "C © D" } else { "A & B" }));
+        }
+        let mut body = json::parse(&payload("1999-03-27", "image", Some(ASSET))).unwrap();
+        body["copyright"] = "<b>Image Credit &amp; <a href=\"https://example.com/rights\">Copyright</a>:</b> <a href=\"https://example.com/photographer\">Federico Pelliccia</a>".into();
+        assert_eq!(fetch(body.dump()).copyright.as_deref(), Some("Federico Pelliccia"));
+        let mut body = json::parse(&payload("1999-03-27", "image", Some(ASSET))).unwrap();
+        body.remove("copyright");
+        assert_eq!(fetch(body.dump()).copyright.as_deref(), Some("A & B"));
+    }
+
+    #[test]
+    fn metadata_preserves_paragraph_and_line_break_boundaries() {
+        let text = render_apod_text("<p>Alpha</p><p>Beta<br>Gamma</p>").unwrap();
+        let paragraphs: Vec<Vec<_>> = text
+            .split("\n\n")
+            .map(|paragraph| paragraph.lines().collect())
+            .collect();
+        assert_eq!(paragraphs, [vec!["Alpha"], vec!["Beta", "Gamma"]]);
+    }
+
+
+    #[test]
+    fn removed_key_options_are_rejected() {
+        for removed in ["--key", "-k"] {
+            let error = cli()
+                .try_get_matches_from(["nasa-wallpaper", "apod", removed, "obsolete"])
+                .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 }
