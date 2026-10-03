@@ -212,6 +212,9 @@ fn get_apod_from(date: &str, base_url: &str) -> WallpaperResult<Apod> {
     let response = reqwest::blocking::get(&request_url)
         .map_err(|err| format!("APOD request failed: {err}"))?;
     let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("No APOD has been published for {date} yet.").into());
+    }
     if !status.is_success() {
         let body = response.text()
             .map_err(|err| format!("APOD HTTP {status}: could not read response: {err}"))?;
@@ -614,8 +617,7 @@ fn main() {
             let result = get_apod(date)
                 .and_then(|apod| show_apod(&apod, info, low, mode));
             if let Err(err) = result {
-                eprintln!("APOD error: {err}");
-                process::exit(1);
+                eprintln!("{}", format!("Warning: {err}").yellow());
             }
         }
         Some(("unsplash", _)) => {
@@ -774,17 +776,20 @@ mod tests {
 
     #[test]
     fn http_failures_keep_status_and_original_response_details() {
-        for (status, body, detail) in [
-            ("404 Not Found", r#"{"code":"apod_basic_not_found","message":"APOD not found."}"#, "apod_basic_not_found"),
-            ("503 Service Unavailable", "Upstream temporarily unavailable", "Upstream temporarily unavailable"),
-        ] {
-            let (base, request) = serve(status, body.to_owned());
-            let error = get_apod_from("1999-03-27", &base).err().unwrap().to_string();
-            assert!(error.contains(status) && error.contains(detail), "{error}");
-            request.join().unwrap();
-        }
+        let (base, request) = serve("503 Service Unavailable", "Upstream temporarily unavailable".to_owned());
+        let error = get_apod_from("1999-03-27", &base).err().unwrap().to_string();
+        assert!(error.contains("503 Service Unavailable") && error.contains("Upstream temporarily unavailable"), "{error}");
+        request.join().unwrap();
         let (base, request) = serve("200 OK", "not valid JSON".to_owned());
         assert!(get_apod_from("1999-03-27", &base).is_err());
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn missing_entries_report_a_plain_message() {
+        let (base, request) = serve("404 Not Found", r#"{"code":"apod_basic_not_found","message":"APOD not found."}"#.to_owned());
+        let error = get_apod_from("1999-03-27", &base).err().unwrap().to_string();
+        assert_eq!(error, "No APOD has been published for 1999-03-27 yet.");
         request.join().unwrap();
     }
 
