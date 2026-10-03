@@ -487,7 +487,7 @@ fn cli() -> Command {
                     Arg::new("low")
                         .short('l')
                         .long("low")
-                        .help("Use a supported NASA remote rendition bounded at 1280 pixels; unavailable sources fail")
+                        .help("Use the low definition image. It is faster than the HD photo")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
