@@ -445,7 +445,7 @@ fn set_wallpaper(image_url: &str, mode: &Mode) -> WallpaperResult<()> {
 fn show_apod(apod: &Apod, info: bool, low: bool, mode: &Mode) -> WallpaperResult<()> {
     println!("{apod}");
     if apod.media_type != "image" {
-        println!("This APOD is not an image. Article: {}", apod.page_url);
+        println!("{}", format!("This APOD is not an image. Article: {}", apod.page_url).yellow());
         return Ok(());
     }
     if info {
