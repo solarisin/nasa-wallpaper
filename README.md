@@ -10,7 +10,6 @@ You can choose images from:
 
 * [APOD (Astronomical Picture of the Day)](https://science.nasa.gov/apod/)
 * [NASA Image Library](https://images.nasa.gov/)
-* [NASA on Unsplash](https://unsplash.com/@nasa)
 
 ![Example](https://images-assets.nasa.gov/image/iss040e008244/iss040e008244~small.jpg)
 
@@ -80,7 +79,7 @@ The compiled binary will be available under `target/release/`.
   ```
 
   Modes: `center`, `crop` (default), `fit`, `span`, `stretch`, and `tile`.
-  The mode also applies to `nasa_image` and `unsplash`.
+  The mode also applies to `nasa_image`.
 
 * Set a random image from the NASA Image Library:
 

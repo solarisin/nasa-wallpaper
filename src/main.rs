@@ -56,7 +56,6 @@ const LICENSE_TEXT: &str = r#"
 const VERSION: &str = "2.1.1";
 const MSG_DONE: &str = "Done";
 const MSG_CHANGING: &str = "Changing wallpaper...";
-const URL_UNSPLASH: &str = "https://source.unsplash.com/user/nasa";
 
 type WallpaperResult<T> = Result<T, Box<dyn Error>>;
 
@@ -564,9 +563,6 @@ fn cli() -> Command {
                         .help("The end year for results. Format: YYYY"),
                 ),
         )
-        .subcommand(Command::new("unsplash").about(
-            "Get a random image from the NASA's account in Unsplash (https://unsplash.com/@nasa)",
-        ))
         .subcommand(Command::new("license").about("Print the license of this program"))
         .arg(
             Arg::new("mode")
@@ -619,12 +615,6 @@ fn main() {
             if let Err(err) = result {
                 eprintln!("{}", format!("Warning: {err}").yellow());
             }
-        }
-        Some(("unsplash", _)) => {
-            println!("{}", MSG_CHANGING.yellow());
-            wallpaper::set_from_url(URL_UNSPLASH).unwrap();
-            wallpaper::set_mode(conv_mode(mode)).unwrap();
-            println!("{}", MSG_DONE.green());
         }
         Some(("nasa_image", sub_matches)) => {
             let q = sub_matches
