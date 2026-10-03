@@ -94,6 +94,13 @@ The compiled binary will be available under `target/release/`.
   nasa-wallpaper nasa_image -q earth
   ```
 
+* Use the `-a` and `-n` shortcuts from earlier versions in place of `apod` and `nasa_image`:
+
+  ```bash
+  nasa-wallpaper -a -d 1999-03-27
+  nasa-wallpaper -n -q earth
+  ```
+
 * Show help:
 
   ```bash
